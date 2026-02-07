@@ -1,0 +1,50 @@
+services:
+  # Service 1: The Transcription Engine (WhisperX + Pyannote)
+  whisperx:
+    image: learnedmachine/whisperx-asr-service:latest
+    container_name: whisperx_api
+    environment:
+      - DEVICE=cuda
+      - COMPUTE_TYPE=float16
+      - BATCH_SIZE=16
+      - HF_TOKEN=${HF_TOKEN}
+      - PRELOAD_MODEL=large-v3
+      - MAX_FILE_SIZE_MB=1000
+    volumes:
+      - ./data/whisperx-cache:/.cache
+      - ./input_audio:/app/audio
+      - ./output_transcripts:/app/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    ports:
+      - "9876:9000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:9000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # Service 2: The RAG Frontend (Open WebUI)
+  # Connects to host Ollama instance via host.docker.internal
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - ENABLE_RAG_WEB_SEARCH=False
+      - RAG_EMBEDDING_ENGINE=ollama
+      - RAG_EMBEDDING_MODEL=nomic-embed-text
+    volumes:
+      - ./data/open-webui:/app/backend/data
+    ports:
+      - "3456:8080"
+    restart: always

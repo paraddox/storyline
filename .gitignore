@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+data/
+input_audio/*
+output_transcripts/*
+!input_audio/.gitkeep
+!output_transcripts/.gitkeep
+config/processed.json
+config/voice_bank.json

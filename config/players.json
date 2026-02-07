@@ -1,0 +1,26 @@
+{
+  "speaker_map": {
+    "SPEAKER_00": {
+      "player": "DM",
+      "character": "Narrator"
+    },
+    "SPEAKER_01": {
+      "player": "Player 1",
+      "character": "Character 1"
+    },
+    "SPEAKER_02": {
+      "player": "Player 2",
+      "character": "Character 2"
+    },
+    "SPEAKER_03": {
+      "player": "Player 3",
+      "character": "Character 3"
+    },
+    "SPEAKER_04": {
+      "player": "Player 4",
+      "character": "Character 4"
+    }
+  },
+  "min_speakers": 4,
+  "max_speakers": 6
+}
