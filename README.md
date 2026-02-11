@@ -1,13 +1,15 @@
 # Storyline — D&D Campaign Archivist
 
-An end-to-end pipeline that transcribes D&D session recordings, generates searchable embeddings, and provides an AI-powered campaign archivist via Claude Agent SDK.
+An end-to-end pipeline that transcribes D&D session recordings, identifies speakers by voice + AI, generates searchable embeddings, and provides an AI-powered campaign archivist via Claude Agent SDK.
 
 ```
-Audio Files → WhisperX (transcription + diarization) → Markdown Transcripts
-                                                            ↓
-                                                       embed.py (ChromaDB)
-                                                            ↓
-                                                       agent.py (Claude Agent SDK)
+Audio Files → WhisperX (transcription + diarization) → Speaker Identification
+                                                              ↓
+                                              Voice Bank ←→ etl.py (matching + LLM fallback)
+                                                              ↓
+                                                     Markdown Transcripts → embed.py (ChromaDB)
+                                                                                  ↓
+                                                                            agent.py (Claude Agent SDK)
 ```
 
 ## Requirements
@@ -51,7 +53,13 @@ pip install -r requirements-agent.txt
 
 ### 4. Player Configuration
 
-Edit `config/players.json` with your player roster and speaker count:
+Copy the example and fill in your campaign's player roster:
+
+```bash
+cp config/players.json.example config/players.json
+```
+
+Then edit `config/players.json` with your players' real names and character names:
 
 ```json
 {
@@ -63,78 +71,128 @@ Edit `config/players.json` with your player roster and speaker count:
     "SPEAKER_04": {"player": "Dana", "character": "Nokapa"}
   },
   "min_speakers": 4,
-  "max_speakers": 5
+  "max_speakers": 5,
+  "clustering_threshold": 0.45
 }
 ```
 
-> `speaker_map` is a static fallback — voice bank enrollment (below) is the primary identification method.
+| Field | Purpose |
+|-------|---------|
+| `speaker_map` | Player roster used as context for LLM identification. Maps player real names to character names. The SPEAKER_XX keys are placeholders — actual mapping is done by voice matching. |
+| `min_speakers` / `max_speakers` | Passed to pyannote diarization to constrain speaker count. |
+| `clustering_threshold` | Pyannote clustering sensitivity. Lower = more speaker splits (default: 0.6). Use 0.4-0.5 if the DM is being merged with players. |
+
+> `config/players.json` is gitignored since it contains your campaign's real names. Only `players.json.example` is tracked.
 
 ## Usage
 
-### First Session (one-time setup)
+### Single Command Pipeline
 
-WhisperX assigns `SPEAKER_XX` labels non-deterministically — `SPEAKER_00` in one session may be a different person in the next. Enrollment solves this by creating a **voice bank** of labeled embeddings.
-
-**1. Drop your audio file into `input_audio/`**
-
-**2. Enroll speakers** — transcribes, uses Claude to auto-identify speakers from dialogue context (name calls, DM patterns, character abilities), and prompts only for any remaining unknowns:
+Drop audio files into `input_audio/` and run:
 
 ```bash
-python enroll.py --session "2025-12-10 21-43-18"
-```
-
-This does three things in one step:
-- Creates `config/voice_bank.json` with labeled voice embeddings
-- Writes the transcript to `output_transcripts/` with correct speaker names
-- Marks the session as processed (so `etl.py` won't re-transcribe it)
-
-**3. Embed the transcript** for semantic search:
-
-```bash
-python embed.py
-```
-
-That's it — your first session is fully indexed and queryable.
-
-### Future Sessions (fully automatic)
-
-Once the voice bank exists, future sessions are hands-free:
-
-```bash
-# 1. Drop audio into input_audio/
-# 2. Transcribe — auto-matches speakers via voice bank
 python etl.py
-# 3. Embed
-python embed.py
 ```
 
-`etl.py` uses multi-embedding scoring to match new speakers against every stored voice sample, blending best-session and centroid scores for robustness. High-confidence matches automatically grow the voice bank.
+That's it. `etl.py` handles everything automatically:
 
-If a speaker can't be matched by voice (below threshold or low confidence), `etl.py` falls back to **LLM-assisted identification** — Claude analyzes the transcript for contextual clues (name mentions, DM patterns, character abilities) to fill in the gaps. Requires `ANTHROPIC_API_KEY` to be set; skipped gracefully if not.
+1. **First session** (no voice bank): enters **enrollment mode** — uses Claude to auto-identify speakers from dialogue context (name calls, DM patterns, character abilities), creates the voice bank, writes the transcript, and embeds to ChromaDB.
+
+2. **Subsequent sessions** (voice bank exists): enters **processing mode** — matches speakers by voice embedding, verifies character assignments via LLM, falls back to LLM for uncertain speakers, writes the transcript, and embeds to ChromaDB.
 
 ```bash
-python etl.py              # Transcribe all new files
-python etl.py --file path  # Transcribe a specific file
-python etl.py --watch      # Watch for new files continuously
+python etl.py                    # Process all new files
+python etl.py --file path        # Process a specific file
+python etl.py --watch            # Watch for new files continuously
+python etl.py --interactive      # Force enrollment mode (re-enroll speakers)
 ```
 
-### New Player Joins
+### How Speaker Identification Works
 
-If `etl.py` encounters an unmatched voice, it appears as `SPEAKER_XX` in the transcript. Run enrollment on that session to label the new speaker and update the voice bank:
+The pipeline uses a two-phase approach: **voice matching** for speed and consistency, with **LLM fallback** for ambiguous cases.
 
-```bash
-python enroll.py --session "2025-12-17 21-19-25" --add-session
+#### Phase 1: Voice Matching
+
+Each speaker embedding from WhisperX is compared against every stored embedding in the voice bank using cosine similarity:
+
+```
+score = 0.6 * best_session_score + 0.4 * centroid_score
 ```
 
-### Auto-enrollment
+- **best_session_score**: Highest cosine similarity against any individual stored embedding for that player.
+- **centroid_score**: Cosine similarity against the player's centroid (mean of all their stored embeddings across sessions).
+- **Threshold**: 0.55 (configurable in voice bank). Speakers below this are unmatched.
 
-If you already have a correct `players.json` mapping for a session, skip the interactive prompts:
+The blending favors strong individual matches while the centroid anchors against drift as more sessions are processed.
 
-```bash
-python enroll.py --session "2025-12-10 21-43-18" --auto
+**DM splits**: Diarization often splits the DM into multiple speaker IDs (different NPC voices, narration vs. dialogue). The system allows multiple SPEAKER_XX IDs to map to the same player — no collision resolution forces them apart.
+
+High-confidence matches (above 0.60) automatically add their embedding to the voice bank, making future matching more robust.
+
+#### Phase 2: LLM Fallback
+
+Speakers that are unmatched or have low confidence (below 0.70) are sent to Claude for identification. The LLM receives:
+- Already-identified speakers with confidence scores
+- The full session transcript with timestamps
+- The campaign roster (unmatched players from voice bank + players.json)
+
+Claude analyzes dialogue for contextual clues: name calls, DM patterns ("roll for..."), character abilities ("I cast..."), out-of-character references, and process of elimination. Players identified by the LLM are auto-enrolled into the voice bank.
+
+### Voice Bank (v2)
+
+The voice bank (`config/voice_bank.json`) is **player-indexed** — keyed by the player's real name, not their character. This supports character switches: the same physical voice is always recognized regardless of which character they're playing.
+
+```json
+{
+  "meta": {"version": 2, "embedding_dim": 256, "threshold": 0.55},
+  "players": {
+    "Alice": {
+      "active_character": "Zara",
+      "characters": {
+        "Elara": {"first_session": "Session 01", "last_session": "Session 15"},
+        "Zara": {"first_session": "Session 16", "last_session": "Session 20"}
+      },
+      "embeddings": [
+        {"session": "Session 01", "vector": [...], "character": "Elara", "confidence": 0.93},
+        {"session": "Session 16", "vector": [...], "character": "Zara", "confidence": 0.91}
+      ],
+      "centroid": [...]
+    }
+  }
+}
 ```
 
-### Embed
+Each player entry tracks:
+- **active_character**: Current character (updated on switch detection)
+- **characters**: Map of all characters played with session ranges
+- **embeddings**: Per-session voice vectors tagged with character name and confidence
+- **centroid**: Mean of all embeddings (recomputed on each update)
+
+The voice bank auto-migrates from v1 (character-indexed) to v2 (player-indexed) if an older format is detected.
+
+### Character Switches
+
+When a player switches characters mid-campaign (e.g., Elara -> Zara), `etl.py` detects this automatically via a lightweight LLM verification after voice matching. The voice bank tracks players (physical voices), not characters — so the same voice is always recognized, regardless of which character they're playing.
+
+The system distinguishes between:
+- **Permanent character switches** (Elara -> Zara) — updates `active_character` in the voice bank
+- **Sidekick/companion control** (player voices an NPC temporarily) — no change, keeps the primary PC
+
+### Diarization Tuning
+
+WhisperX uses pyannote for speaker diarization. The pipeline patches the WhisperX container (`config/whisperx_main.py`) to expose pyannote's clustering threshold, which controls how aggressively it merges speaker segments.
+
+| Threshold | Effect | Use Case |
+|-----------|--------|----------|
+| 0.6 (default) | Fewer speakers, more merging | Clean recordings, few speakers |
+| 0.45 | More speakers, less merging | D&D sessions where DM voices NPCs |
+| 0.3 | Maximum separation | Debugging, when players are being merged |
+
+Set `clustering_threshold` in `config/players.json`. The Docker service runs with `COMPUTE_TYPE=float32` and `BATCH_SIZE=8` for maximum accuracy.
+
+### Embed (standalone)
+
+`etl.py` embeds transcripts automatically. Use `embed.py` standalone for re-indexing or status:
 
 ```bash
 python embed.py              # Embed all un-embedded transcripts
@@ -143,7 +201,7 @@ python embed.py --reindex    # Re-embed everything from scratch
 python embed.py --status     # Show embedding status
 ```
 
-Embeddings are stored in ChromaDB at `data/chromadb/`.
+Embeddings are stored in ChromaDB at `data/chromadb/`. If Ollama is unavailable when `etl.py` runs, transcription succeeds and embedding is skipped with a warning.
 
 ### Query
 
@@ -153,6 +211,9 @@ python agent.py
 
 # Single query
 python agent.py --query "What happened in the last session?"
+
+# Save output to file
+python agent.py --query "Summarize session 2025-12-10" --output output_transcripts/summary.md
 
 # Use a different model
 python agent.py --model claude-opus-4-6
@@ -194,8 +255,8 @@ Everything runs on one machine with a GPU:
 ```
 
 ```bash
-# Full pipeline on one machine
-python etl.py && python embed.py
+# Full pipeline on one machine (etl.py handles embedding automatically)
+python etl.py
 python agent.py
 ```
 
@@ -229,6 +290,57 @@ python agent.py --data-dir ~/storyline
 
 The `--data-dir` flag tells the agent where to find the synced transcripts and ChromaDB data.
 
+### OpenClaw + Discord
+
+For Discord integration, use [OpenClaw](https://github.com/openclaw) as the gateway. The Campaign Archivist runs as an OpenClaw agent — no separate `agent.py` process needed (single Claude session, half the token cost).
+
+```
+┌─ Machine A (GPU) ────────┐              ┌─ Remote (Mini PC) ──────────┐
+│ WhisperX (Docker)         │    rsync     │ OpenClaw (Discord gateway)  │
+│ Ollama + nomic-embed-text │ ──────────→  │   └── "archivist" agent     │
+│ etl.py → embed.py         │  transcripts │       ├── AGENTS.md (prompt)│
+│ ChromaDB (source)         │  + chromadb  │       ├── read (transcripts)│
+└───────────────────────────┘              │       └── exec campaign_cli │
+                                           │ Ollama + nomic-embed-text   │
+                                           │ ChromaDB (synced)           │
+                                           └─────────────────────────────┘
+```
+
+**One-time setup on the remote machine:**
+
+```bash
+# 1. Clone the repo and install minimal deps
+git clone <repo> ~/storyline
+cd ~/storyline
+pip install -r requirements-openclaw.txt
+
+# 2. Install Ollama + embedding model (small, CPU-only is fine)
+# See: https://ollama.com/download
+ollama pull nomic-embed-text  # ~274MB, runs on CPU
+
+# 3. Sync data from GPU machine
+# (on Machine A): ./sync.sh user@remote
+```
+
+4. Configure OpenClaw (for example in `~/.openclaw/openclaw.json`) with docs-style keys:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "workspace": "~/storyline",
+      "skipBootstrap": true,
+      "sandbox": { "mode": "off" }
+    }
+  },
+  "tools": {
+    "allow": ["read", "exec"]
+  }
+}
+```
+
+If you decide against installing Ollama on the remote, `campaign_cli.py semantic` gracefully degrades with a clear message. Text search (`campaign_cli.py search`) and direct transcript reading still work fully.
+
 ## Project Structure
 
 ```
@@ -240,16 +352,22 @@ storyline/
 │   ├── whisperx-cache/    # WhisperX model cache
 │   └── open-webui/        # Open WebUI data
 ├── config/
-│   ├── players.json       # Speaker → character mapping (static fallback)
-│   ├── voice_bank.json    # Persistent voice embeddings (generated by enroll.py)
+│   ├── players.json       # Player roster + diarization settings
+│   ├── voice_bank.json    # Player-indexed voice embeddings (v2, generated by etl.py)
+│   ├── whisperx_main.py   # Patched WhisperX service (exposes clustering params)
 │   └── processed.json     # ETL dedup log
-├── enroll.py              # Voice bank enrollment (bootstrap speaker identity)
-├── etl.py                 # Audio → Markdown transcript pipeline
-├── embed.py               # Transcript → ChromaDB embeddings
-├── agent.py               # Claude Agent SDK campaign archivist
-├── sync.sh                # rsync to remote machine
+├── etl.py                 # Unified pipeline: transcribe, enroll, identify, embed
+├── embed.py               # Standalone embedding tool (re-index, status)
+├── agent.py               # Claude Agent SDK campaign archivist (local CLI)
+├── campaign_cli.py        # Standalone CLI for OpenClaw exec (no SDK dependency)
+├── AGENTS.md              # OpenClaw system prompt (Campaign Archivist persona)
+├── skills/
+│   └── campaign-archivist/
+│       └── SKILL.md       # OpenClaw skill definition
+├── sync.sh                # rsync data to remote machine
 ├── docker-compose.yml     # WhisperX + Open WebUI services
-├── requirements-agent.txt # Python dependencies
+├── requirements-agent.txt # Python dependencies (local CLI with claude-agent-sdk)
+├── requirements-openclaw.txt # Minimal deps for remote (chromadb + requests only)
 └── .env                   # HF_TOKEN, API keys (not in git)
 ```
 

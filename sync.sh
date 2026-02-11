@@ -1,5 +1,6 @@
 #!/bin/bash
-# Sync transcripts + ChromaDB + config to a remote machine
+# Sync data files (transcripts, embeddings, config) to a remote machine.
+# The remote should already have the repo cloned — this only copies data.
 # Usage: ./sync.sh user@host [dest_dir]
 
 set -euo pipefail
@@ -11,24 +12,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Syncing storyline data to ${REMOTE}:${DEST}"
 
 rsync -avz --progress \
-  "${SCRIPT_DIR}/output_transcripts/" \
-  "${REMOTE}:${DEST}/output_transcripts/"
-
-rsync -avz --progress \
-  "${SCRIPT_DIR}/data/chromadb/" \
-  "${REMOTE}:${DEST}/data/chromadb/"
-
-rsync -avz --progress \
-  "${SCRIPT_DIR}/config/players.json" \
-  "${REMOTE}:${DEST}/config/players.json"
-
-# Sync voice bank if it exists
-if [ -f "${SCRIPT_DIR}/config/voice_bank.json" ]; then
-  rsync -avz --progress \
-    "${SCRIPT_DIR}/config/voice_bank.json" \
-    "${REMOTE}:${DEST}/config/voice_bank.json"
-fi
+  --include='output_transcripts/***' \
+  --include='data/chromadb/***' \
+  --include='config/players.json' \
+  --include='config/voice_bank.json' \
+  --include='data/' \
+  --include='config/' \
+  --exclude='*' \
+  "${SCRIPT_DIR}/" "${REMOTE}:${DEST}/"
 
 echo ""
-echo "Sync complete. On the remote machine run:"
-echo "  cd ${DEST} && python agent.py --data-dir ${DEST}/data/chromadb"
+echo "Sync complete. Campaign data is ready on the remote."
+echo "  OpenClaw: data available at ${DEST} (agent reads via AGENTS.md)"
+echo "  Standalone: cd ${DEST} && python agent.py"

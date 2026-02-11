@@ -263,10 +263,27 @@ async def get_campaign_info(args: dict[str, Any]) -> dict[str, Any]:
         with open(VOICE_BANK_PATH) as f:
             bank = json.load(f)
 
-        lines.append("**Campaign Roster** (from voice bank):\n")
-        for name, info in bank.get("speakers", {}).items():
-            n_sessions = len(info.get("embeddings", []))
-            lines.append(f"- {info.get('character', name)} (played by {info.get('player', '?')}) — {n_sessions} session(s) enrolled")
+        version = bank.get("meta", {}).get("version", 1)
+
+        if version >= 2:
+            # v2: player-indexed
+            lines.append("**Campaign Roster** (from voice bank v2):\n")
+            for player_name, info in bank.get("players", {}).items():
+                active_char = info.get("active_character", "?")
+                n_sessions = len(info.get("embeddings", []))
+                chars = info.get("characters", {})
+                if len(chars) > 1:
+                    char_list = ", ".join(
+                        f"{c} *" if c == active_char else c for c in chars.keys())
+                    lines.append(f"- {player_name}: {char_list} — {n_sessions} session(s) enrolled")
+                else:
+                    lines.append(f"- {player_name} as {active_char} — {n_sessions} session(s) enrolled")
+        else:
+            # v1: character-indexed (legacy)
+            lines.append("**Campaign Roster** (from voice bank):\n")
+            for name, info in bank.get("speakers", {}).items():
+                n_sessions = len(info.get("embeddings", []))
+                lines.append(f"- {info.get('character', name)} (played by {info.get('player', '?')}) — {n_sessions} session(s) enrolled")
 
         threshold = bank.get("meta", {}).get("threshold", "?")
         lines.append(f"\nVoice matching threshold: {threshold}")
@@ -409,7 +426,7 @@ async def interactive_loop(model: str):
             print()
 
 
-async def single_query(prompt: str, model: str):
+async def single_query(prompt: str, model: str, output: Path | None = None):
     """One-shot query mode.
 
     Uses ClaudeSDKClient (streaming mode) so stdin stays open for MCP
@@ -417,6 +434,7 @@ async def single_query(prompt: str, model: str):
     which breaks MCP tool calls.
     """
     options = create_options(model)
+    text_parts: list[str] = []
 
     async with ClaudeSDKClient(options=options) as client:
         await client.query(prompt)
@@ -426,16 +444,23 @@ async def single_query(prompt: str, model: str):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         print(block.text)
+                        text_parts.append(block.text)
                     elif isinstance(block, ToolUseBlock):
                         print(f"  [searching: {block.name}...]", file=sys.stderr)
             elif isinstance(msg, ResultMessage):
                 if msg.total_cost_usd:
                     print(f"\n[Cost: ${msg.total_cost_usd:.4f}]", file=sys.stderr)
 
+    if output and text_parts:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("\n\n".join(text_parts), encoding="utf-8")
+        print(f"\nSaved to: {output}", file=sys.stderr)
+
 
 def main():
     parser = argparse.ArgumentParser(description="D&D Campaign Archivist (Claude Agent SDK)")
     parser.add_argument("--query", "-q", type=str, help="Single query mode (non-interactive)")
+    parser.add_argument("--output", "-o", type=Path, help="Save query output to file (use with --query)")
     parser.add_argument("--model", "-m", type=str, default=DEFAULT_MODEL,
                         help=f"Claude model to use (default: {DEFAULT_MODEL})")
     parser.add_argument("--data-dir", type=Path, help="Base data directory (for remote deployment)")
@@ -455,7 +480,7 @@ def main():
         _chromadb_dir = base / "data" / "chromadb"
 
     if args.query:
-        asyncio.run(single_query(args.query, args.model))
+        asyncio.run(single_query(args.query, args.model, args.output))
     else:
         asyncio.run(interactive_loop(args.model))
 

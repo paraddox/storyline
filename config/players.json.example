@@ -1,0 +1,12 @@
+{
+  "speaker_map": {
+    "SPEAKER_00": {"player": "DM", "character": "Narrator"},
+    "SPEAKER_01": {"player": "Alice", "character": "Elara"},
+    "SPEAKER_02": {"player": "Bob", "character": "Kai"},
+    "SPEAKER_03": {"player": "Charlie", "character": "Zeno"},
+    "SPEAKER_04": {"player": "Dana", "character": "Nokapa"}
+  },
+  "min_speakers": 4,
+  "max_speakers": 5,
+  "clustering_threshold": 0.45
+}

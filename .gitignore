@@ -1,5 +1,6 @@
 .env
 .venv/
+.venv-py314-backup/
 __pycache__/
 data/
 input_audio/*
@@ -8,3 +9,11 @@ output_transcripts/*
 !output_transcripts/.gitkeep
 config/processed.json
 config/voice_bank.json
+config/players.json
+
+# OpenClaw workspace templates (auto-generated, not campaign-related)
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
