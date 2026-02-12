@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Syncing storyline data to ${REMOTE}:${DEST}"
 
-rsync -avz --progress \
+rsync -avz --delete --progress \
   --include='output_transcripts/***' \
   --include='data/chromadb/***' \
   --include='config/players.json' \
