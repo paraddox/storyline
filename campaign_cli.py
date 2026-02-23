@@ -89,37 +89,37 @@ def _get_embedding(text):
         return None
 
 
-# --- Subcommands ---
+# --- Core functions (return strings, used by MCP server and CLI) ---
 
-def cmd_sessions(args):
+def _do_sessions() -> str:
     """List all available session transcripts with sizes and ChromaDB status."""
     files = sorted(TRANSCRIPTS_DIR.glob("*.md"))
     if not files:
-        print("No transcripts found. Run: python etl.py && python embed.py")
-        return
+        return "No transcripts found. Run: python etl.py && python embed.py"
 
-    print(f"Found {len(files)} session transcript(s):\n")
+    lines = [f"Found {len(files)} session transcript(s):\n"]
     for f in files:
         size_kb = f.stat().st_size / 1024
-        print(f"- **{f.stem}** ({size_kb:.1f} KB)")
+        lines.append(f"- **{f.stem}** ({size_kb:.1f} KB)")
 
     collection = _get_collection()
     if collection and collection.count() > 0:
-        print(f"\nChromaDB: {collection.count()} embedded chunks")
+        lines.append(f"\nChromaDB: {collection.count()} embedded chunks")
     else:
-        print("\nChromaDB: no embeddings yet (run: python embed.py)")
+        lines.append("\nChromaDB: no embeddings yet (run: python embed.py)")
+
+    return "\n".join(lines)
 
 
-def cmd_search(args):
+def _do_search(query: str, speaker: str = "", max_results: int = 20) -> str:
     """Exact text search across session transcripts."""
-    search_query = args.query.lower()
-    speaker_filter = (args.speaker or "").lower()
-    max_results = min(args.max or 20, 20)
+    search_query = query.lower()
+    speaker_filter = speaker.lower()
+    max_results = min(max_results or 20, 20)
 
     files = sorted(TRANSCRIPTS_DIR.glob("*.md"))
     if not files:
-        print("No transcripts found.")
-        return
+        return "No transcripts found."
 
     results = []
     for filepath in files:
@@ -138,30 +138,24 @@ def cmd_search(args):
             break
 
     if not results:
-        print(f"No results found for '{args.query}'")
-        return
+        return f"No results found for '{query}'"
 
-    print(f"Found {len(results)} match(es) for '{args.query}':\n")
-    for r in results:
-        print(r)
+    header = f"Found {len(results)} match(es) for '{query}':\n"
+    return header + "\n".join(results)
 
 
-def cmd_semantic(args):
+def _do_semantic(query: str, n_results: int = 10, speaker: str = "") -> str:
     """Vector similarity search via ChromaDB + Ollama embeddings."""
     collection = _get_collection()
     if not collection or collection.count() == 0:
-        print("No embeddings available. Run: python embed.py")
-        return
+        return "No embeddings available. Run: python embed.py"
 
-    embedding = _get_embedding(args.query)
+    embedding = _get_embedding(query)
     if embedding is None:
-        print("Could not generate embedding. Is Ollama running with nomic-embed-text?")
-        print("Install: ollama pull nomic-embed-text")
-        return
+        return "Could not generate embedding. Is Ollama running with nomic-embed-text?\nInstall: ollama pull nomic-embed-text"
 
-    n_results = min(args.n or 10, 10)
-    speaker_filter = args.speaker or ""
-    where_filter = {"speaker": speaker_filter} if speaker_filter else None
+    n_results = min(n_results or 10, 10)
+    where_filter = {"speaker": speaker} if speaker else None
 
     try:
         results = collection.query(
@@ -171,31 +165,61 @@ def cmd_semantic(args):
             include=["documents", "metadatas", "distances"],
         )
     except Exception as e:
-        print(f"Search error: {e}")
-        return
+        return f"Search error: {e}"
 
     if not results["documents"] or not results["documents"][0]:
-        print(f"No semantic matches for '{args.query}'")
-        return
+        return f"No semantic matches for '{query}'"
 
-    print(f"Top {len(results['documents'][0])} semantic matches for '{args.query}':\n")
+    lines = [f"Top {len(results['documents'][0])} semantic matches for '{query}':\n"]
     for doc, meta, dist in zip(
         results["documents"][0],
         results["metadatas"][0],
         results["distances"][0],
     ):
         similarity = 1 - dist
-        print(
+        lines.append(
             f"[{meta['session']}:{meta['line_number']}] "
             f"(similarity: {similarity:.2f}) "
             f"**{meta['speaker']}** [{meta['timestamp']}]"
         )
         last_line = doc.strip().split("\n")[-1]
-        print(f"  {last_line}\n")
+        lines.append(f"  {last_line}\n")
+
+    return "\n".join(lines)
 
 
-def cmd_info(args):
+def _do_session_content(session: str, start_line: int = 1, end_line: int = 0) -> str:
+    """Read the full or partial content of a specific session transcript."""
+    filepath = TRANSCRIPTS_DIR / f"{session}.md"
+    if not filepath.exists():
+        candidates = list(TRANSCRIPTS_DIR.glob("*.md"))
+        matches = [f for f in candidates if session.lower() in f.stem.lower()]
+        if not matches:
+            available = [f.stem for f in candidates]
+            return f"Session '{session}' not found. Available: {', '.join(available) or 'none'}"
+        filepath = matches[0]
+
+    text = filepath.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    total = len(lines)
+
+    start = max(1, start_line or 1)
+    end = min(total, end_line if end_line and end_line > 0 else start + 199)
+
+    selected = lines[start - 1:end]
+    header = f"**{filepath.stem}** (lines {start}-{end} of {total}):\n\n"
+    content = header + "\n".join(selected)
+
+    if end < total:
+        content += f"\n\n... ({total - end} more lines. Use start_line={end + 1} to continue)"
+
+    return content
+
+
+def _do_info() -> str:
     """Get the player/character roster and campaign configuration."""
+    lines = []
+
     if VOICE_BANK_PATH.exists():
         with open(VOICE_BANK_PATH) as f:
             bank = json.load(f)
@@ -203,8 +227,7 @@ def cmd_info(args):
         version = bank.get("meta", {}).get("version", 1)
 
         if version >= 2:
-            # v2: player-indexed
-            print("**Campaign Roster** (from voice bank v2):\n")
+            lines.append("**Campaign Roster** (from voice bank v2):\n")
             for player_name, info in bank.get("players", {}).items():
                 active_char = info.get("active_character", "?")
                 n_sessions = len(info.get("embeddings", []))
@@ -212,34 +235,50 @@ def cmd_info(args):
                 if len(chars) > 1:
                     char_list = ", ".join(
                         f"{c} *" if c == active_char else c for c in chars.keys())
-                    print(f"- {player_name}: {char_list} — {n_sessions} session(s) enrolled")
+                    lines.append(f"- {player_name}: {char_list} — {n_sessions} session(s) enrolled")
                 else:
-                    print(f"- {player_name} as {active_char} — {n_sessions} session(s) enrolled")
+                    lines.append(f"- {player_name} as {active_char} — {n_sessions} session(s) enrolled")
         else:
-            # v1: character-indexed (legacy)
-            print("**Campaign Roster** (from voice bank):\n")
+            lines.append("**Campaign Roster** (from voice bank):\n")
             for name, info in bank.get("speakers", {}).items():
                 n_sessions = len(info.get("embeddings", []))
-                print(f"- {info.get('character', name)} (played by {info.get('player', '?')}) — {n_sessions} session(s) enrolled")
+                lines.append(f"- {info.get('character', name)} (played by {info.get('player', '?')}) — {n_sessions} session(s) enrolled")
 
         threshold = bank.get("meta", {}).get("threshold", "?")
-        print(f"\nVoice matching threshold: {threshold}")
+        lines.append(f"\nVoice matching threshold: {threshold}")
 
     elif PLAYERS_JSON.exists():
         with open(PLAYERS_JSON) as f:
             players = json.load(f)
 
-        print("**Campaign Roster** (from static config):\n")
+        lines.append("**Campaign Roster** (from static config):\n")
         speaker_map = players.get("speaker_map", {})
         for speaker_id, info in speaker_map.items():
             if isinstance(info, dict):
-                print(f"- {info.get('character', '?')} (played by {info.get('player', '?')})")
+                lines.append(f"- {info.get('character', '?')} (played by {info.get('player', '?')})")
             else:
-                print(f"- {info}")
+                lines.append(f"- {info}")
 
-        print(f"\nSpeaker range: {players.get('min_speakers', '?')}-{players.get('max_speakers', '?')}")
+        lines.append(f"\nSpeaker range: {players.get('min_speakers', '?')}-{players.get('max_speakers', '?')}")
     else:
-        print("No voice bank or players.json found.")
+        return "No voice bank or players.json found."
+
+    return "\n".join(lines)
+
+
+# --- CLI subcommands (thin wrappers around _do_* functions) ---
+
+def cmd_sessions(args):
+    print(_do_sessions())
+
+def cmd_search(args):
+    print(_do_search(args.query, args.speaker or "", args.max or 20))
+
+def cmd_semantic(args):
+    print(_do_semantic(args.query, args.n or 10, args.speaker or ""))
+
+def cmd_info(args):
+    print(_do_info())
 
 
 def main():

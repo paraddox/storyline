@@ -1,6 +1,6 @@
 # Storyline — D&D Campaign Archivist
 
-An end-to-end pipeline that transcribes D&D session recordings, identifies speakers by voice + AI, generates searchable embeddings, and provides an AI-powered campaign archivist via Claude Agent SDK.
+An end-to-end pipeline that transcribes D&D session recordings, identifies speakers by voice + AI, generates searchable embeddings, and provides an AI-powered campaign archivist via Claude CLI.
 
 ```
 Audio Files → WhisperX (transcription + diarization) → Speaker Identification
@@ -9,12 +9,13 @@ Audio Files → WhisperX (transcription + diarization) → Speaker Identificatio
                                                               ↓
                                                      Markdown Transcripts → embed.py (ChromaDB)
                                                                                   ↓
-                                                                            agent.py (Claude Agent SDK)
+                                                                            agent.py (Claude CLI)
 ```
 
 ## Requirements
 
 - **Python 3.12+** with a virtual environment
+- **Claude CLI** (`claude`) installed and authenticated (`npm install -g @anthropic-ai/claude-code`)
 - **Docker** with NVIDIA GPU support (for WhisperX)
 - **Ollama** with `nomic-embed-text` model (for embeddings)
 - **Anthropic API key** or **Claude Max OAuth token** (for the Claude-powered agent and LLM-assisted identification)
@@ -283,8 +284,9 @@ Machine A (GPU) handles transcription and embedding. Machine B runs the agent an
 **On Machine B:**
 
 ```bash
-pip install claude-agent-sdk chromadb requests
-export ANTHROPIC_API_KEY='sk-ant-...'
+pip install mcp chromadb requests
+npm install -g @anthropic-ai/claude-code  # Claude CLI
+claude auth                                # Authenticate
 python agent.py --data-dir ~/storyline
 ```
 
@@ -358,7 +360,8 @@ storyline/
 │   └── processed.json     # ETL dedup log
 ├── etl.py                 # Unified pipeline: transcribe, enroll, identify, embed
 ├── embed.py               # Standalone embedding tool (re-index, status)
-├── agent.py               # Claude Agent SDK campaign archivist (local CLI)
+├── agent.py               # Claude CLI campaign archivist (local CLI)
+├── campaign_mcp_server.py # MCP server exposing campaign tools (used by agent.py)
 ├── campaign_cli.py        # Standalone CLI for OpenClaw exec (no SDK dependency)
 ├── AGENTS.md              # OpenClaw system prompt (Campaign Archivist persona)
 ├── skills/
@@ -366,7 +369,7 @@ storyline/
 │       └── SKILL.md       # OpenClaw skill definition
 ├── sync.sh                # rsync data to remote machine
 ├── docker-compose.yml     # WhisperX + Open WebUI services
-├── requirements-agent.txt # Python dependencies (local CLI with claude-agent-sdk)
+├── requirements-agent.txt # Python dependencies (local CLI with MCP server)
 ├── requirements-openclaw.txt # Minimal deps for remote (chromadb + requests only)
 └── .env                   # HF_TOKEN, API keys (not in git)
 ```
